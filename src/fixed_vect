@@ -1,0 +1,686 @@
+// Copyright Kevin Hall 2015.
+// Distributed under the Boost Software License, Version 1.0.
+// (See accompanying file LICENSE_1_0.txt or copy at
+//  http://www.boost.org/LICENSE_1_0.txt)
+
+#ifndef FIXED_VECT_GUARD_
+#define FIXED_VECT_GUARD_
+
+#include <algorithm>
+#include <cstddef>
+#include <initializer_list>
+#include <iterator>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std
+{
+
+namespace detail
+{
+	template <class T, std::ptrdiff_t N>
+	class ssf_vect;
+
+	template <class T>
+	class rsf_vect;
+} // namespace detail
+
+template <typename T>
+class fixed_vect
+{
+public:
+	// types:
+	typedef T                                     value_type;
+	typedef value_type&                           reference;
+	typedef const value_type&                     const_reference;
+	typedef value_type*                           pointer;
+	typedef const value_type*                     const_pointer;
+	typedef pointer		                          iterator;					// implementation-defined
+	typedef const_pointer                         const_iterator;			// implementation-defined
+	typedef std::reverse_iterator<iterator>       reverse_iterator;
+	typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
+	typedef std::ptrdiff_t                        size_type;				// implementation-defined
+	typedef std::ptrdiff_t                        difference_type;			// implementation-defined
+
+	template <std::ptrdiff_t N>
+	using static_sized	= detail::ssf_vect<T, N>;
+	using runtime_sized	= detail::rsf_vect<T>;
+
+protected:
+	typedef typename std::aligned_storage<sizeof(value_type), alignof(value_type)>::type	store_t;
+
+	store_t*			data_;
+	const size_type		max_size_;
+	size_type			size_;
+
+private:
+	template <class... Args>
+	void construct(iterator pos, Args&&... args)
+	{
+		new(pos)	T(std::forward<Args>(args)...);
+	}
+
+	void destruct(iterator pos) noexcept
+	{
+		pos->~value_type();
+	}
+
+	bool resize_add(size_type count, const value_type& value)
+	{
+		if (count > max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		while (size_ < count)
+		{
+			construct(&data()[size_], value);
+			++size_;
+		}
+	}
+
+	void move_elements(iterator src_first, iterator src_last, iterator dst)
+	{
+		if (src_first == dst)
+		{
+			return;
+		}
+
+		if (src_first > dst)
+		{
+			for (iterator it = src_first; it != src_last; ++it, ++dst)
+			{
+				*dst = std::move(*it);
+				destruct(it);
+			}
+		}
+		else
+		{
+			reverse_iterator src_rfirst(src_last);
+			reverse_iterator src_rlast(src_first);
+			reverse_iterator rdst(dst+(src_last-src_first));
+			for (reverse_iterator rit = src_rfirst; rit != src_rlast; ++rit, ++rdst)
+			{
+				*rdst = std::move(*rit);
+				destruct(&*rit);
+			}
+		}
+	}
+
+	iterator mutable_iterator(const_iterator it)
+	{
+		return iterator(&data()[it-cbegin()]);
+	}
+
+	template <class Iterator>
+	iterator insert_itrange_helper(const_iterator pos, Iterator first, Iterator last, std::true_type /* is Iterator a bidirectional access iterator */)
+	{
+		const size_type new_elem_count = std::distance(first, last);
+
+		if (new_elem_count + size_ > max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos + new_elem_count);
+		
+		for (auto it = mpos; first != last; ++it, ++first)
+		{
+			construct(it, *first);
+		}
+
+		size_ += new_elem_count;
+		return mpos;
+	}
+
+	template <class Iterator>
+	iterator insert_itrange_helper(const_iterator pos, Iterator first, Iterator last, std::false_type /* is Iterator a bidirectional access iterator */)
+	{
+		const size_type max_new_elems = max_size_ - size_;
+		const iterator mpos = mutable_iterator(pos);
+		const iterator end_elems_pos = mpos + max_new_elems;
+		move_elements(mpos, end(), end_elems_pos);
+
+		iterator it = mpos;
+		for (size_type i=0; (i<max_new_elems) && (first != last); ++i, ++it, ++first)
+		{
+			construct(it, *first);
+		}
+
+		move_elements(end_elems_pos, &(data()[max_size_]), it);
+		size_ += (it-mpos);
+		return mpos;
+	}
+
+	// 23.3.6.2, construct/copy/destroy:
+private:
+	fixed_vect() = delete;	// private or deleted
+
+protected:
+	fixed_vect(store_t*		data,
+		   size_type	max_size)
+		: data_(data)
+		, max_size_(max_size)
+		, size_(0)
+	{
+	}
+
+	void set_data_array(store_t* data)
+	{
+		data_ = data;
+	}
+
+public:
+	fixed_vect(const fixed_vect&&) = delete;
+	fixed_vect& operator=(const fixed_vect&&) = delete;
+	template <class T>
+	fixed_vect(const T&&) = delete;
+	template <class T>
+	fixed_vect& operator=(const T&&) = delete;
+	fixed_vect(const fixed_vect&) = delete;
+	fixed_vect& operator=(const fixed_vect&) = delete;
+	template <class T>
+	fixed_vect(const T&) = delete;
+	template <class T>
+	fixed_vect& operator=(const T&) = delete;
+
+	// iterators:
+	iterator				begin() noexcept
+	{
+		return iterator(&front());
+	}
+
+	const_iterator			begin() const noexcept
+	{
+		return const_iterator(&front());
+	}
+
+	iterator				end() noexcept
+	{
+		return iterator(&data()[size_]);
+	}
+
+	const_iterator			end() const noexcept
+	{
+		return const_iterator(&data()[size_]);
+	}
+
+	reverse_iterator		rbegin() noexcept
+	{
+		return reverse_iterator(end());
+	}
+
+	const_reverse_iterator	rbegin() const noexcept
+	{
+		return const_reverse_iterator(end());
+	}
+
+	reverse_iterator		rend() noexcept
+	{
+		return reverse_iterator(begin());
+	}
+
+	const_reverse_iterator	rend() const noexcept
+	{
+		return const_reverse_iterator(begin());
+	}
+
+	const_iterator			cbegin() const noexcept
+	{
+		return const_iterator(&front());
+	}
+
+	const_iterator			cend() const noexcept
+	{
+		return const_iterator(&data()[size_]);
+	}
+
+	const_reverse_iterator	crbegin() const noexcept
+	{
+		return const_reverse_iterator(end());
+	}
+
+	const_reverse_iterator	crend() const noexcept
+	{
+		return const_reverse_iterator(begin());
+	}
+
+	// capacity:
+	bool empty() const noexcept
+	{
+		return (size_ == 0);
+	}
+
+	bool full() const noexcept
+	{
+		return (size_ == max_size_);
+	}
+
+	size_type size() const noexcept
+	{
+		return size_;
+	}
+
+	size_type max_size() const noexcept
+	{
+		return max_size_;
+	}
+
+	size_type capacity() const noexcept
+	{
+		return max_size_;
+	}
+
+	void resize(size_type count)
+	{
+		if (size_ >= count)
+		{
+			erase(end()-(size_-count), end());
+		}
+		else
+		{
+			resize_add(count, value_type());
+		}
+	}
+
+	void resize(size_type count, const value_type& value)
+	{
+		if (size_ >= count)
+		{
+			erase(end()-(size_-count), end());
+		}
+		else
+		{
+			resize_add(count, value);
+		}
+	}
+
+
+	// element access:
+	const_reference operator[](size_type pos) const
+	{
+		return data()[pos];
+	}
+
+	reference operator[](size_type pos)
+	{
+		return data()[pos];
+	}
+
+	const_reference at(size_type pos) const
+	{
+		return data()[pos];
+	}
+
+	reference at(size_type pos)
+	{
+		return data()[pos];
+	}
+
+	reference front()
+	{
+		return *data();
+	}
+
+	const_reference front() const
+	{
+		return *data();
+	}
+
+	reference back()
+	{
+		return data()[size_-1];
+	}
+
+	const_reference back() const
+	{
+		return data()[size_-1];
+	}
+
+	// data access
+	pointer data() noexcept
+	{
+		return reinterpret_cast<pointer>(data_);
+	}
+
+	const_pointer data() const noexcept
+	{
+		return reinterpret_cast<const_pointer>(data_);
+	}
+
+	// modifiers:
+	template <class... Args>
+	void emplace_back(Args&&... args)
+ 	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		construct(&data()[size_], std::forward<Args>(args)...);
+		++size_;
+ 	}
+
+	void push_back(const T& value)
+	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		construct(&data()[size_], value);
+		++size_;
+	}
+
+	void push_back(T&& value)
+	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		construct(&data()[size_], std::move(value));
+		++size_;
+	}
+
+	void pop_back()
+	{
+		--size_;
+		destruct(&data()[size_]);
+	}
+
+	template <class... Args>
+	iterator emplace(const_iterator pos, Args&&... args)
+ 	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, std::forward<Args>(args)...);
+		++size_;
+		return mpos;
+ 	}
+
+	iterator insert(const_iterator pos, const T& value)
+	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, value);
+		++size_;
+		return mpos;
+	}
+
+	iterator insert(const_iterator pos, T&& value)
+	{
+		if (size_ >= max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, std::move(value));
+		++size_;
+		return mpos;
+	}
+
+	iterator insert(const_iterator pos, size_type count, const T& value)
+	{
+		if (count + size_ > max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+count);
+		iterator it = mpos;
+
+		for (size_type i=0; i<count; ++i, ++it)
+		{
+			get_constructible_ptr(it)->construct(value);
+		}
+		size_ += count;
+		return mpos;
+	};
+
+	template <class InputIterator>
+	iterator insert(const_iterator pos, InputIterator first, InputIterator last)
+	{
+		auto isBidirectionalIterator = integral_constant<bool,
+											std::is_same<
+												std::iterator_traits<InputIterator>::iterator_category,
+												std::random_access_iterator_tag
+											>::value ||
+											std::is_same<
+												std::iterator_traits<InputIterator>::iterator_category,
+												std::bidirectional_iterator_tag
+											>::value
+										>{};
+		return insert_itrange_helper(pos,
+									 first,
+									 last,
+									 isBidirectionalIterator);
+	}
+
+	iterator insert(const_iterator pos, std::initializer_list<T> ilist)
+	{
+		if (static_cast<size_type>(ilist.size()) + size_ > max_size_)
+		{
+			throw std::bad_alloc{};
+		}
+
+		return insert(pos, ilist.begin(), ilist.end());
+	}
+
+	iterator erase(const_iterator pos)
+	{
+		return erase(pos, pos+1);
+	}
+
+	iterator erase(const_iterator first, const_iterator last)
+	{
+		const iterator mlast = mutable_iterator(last);
+
+		if (first == last)
+		{
+			return mlast;
+		}
+
+		move_elements(mutable_iterator(last), end(), mutable_iterator(first));
+		size_ -= (last - first);
+
+		for (iterator it = end(); it < last; ++it)
+		{
+			destruct(it);
+		}
+		return mutable_iterator(first);
+	}
+
+	void clear() noexcept
+	{
+		erase(cbegin(), cend());
+	}
+};
+
+template <class T>
+bool operator==(const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	if (x.size() != x.size())
+	{
+		return false;
+	}
+	return equal(x.begin(), x.end(), y.begin());
+}
+
+template <class T>
+bool operator< (const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	return lexicographical_compare(x.begin(), x.end(), y.begin(), y.end());
+}
+
+template <class T>
+bool operator!=(const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	return !(x == y);
+}
+
+template <class T>
+bool operator> (const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	return lexicographical_compare(y.begin(), y.end(), x.begin(), x.end());
+}
+
+template <class T>
+bool operator>=(const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	return !lexicographical_compare(x.begin(), x.end(), y.begin(), y.end());
+}
+
+template <class T>
+bool operator<=(const fixed_vect<T>& x, const fixed_vect<T>& y)
+{
+	return !lexicographical_compare(y.begin(), y.end(), x.begin(), x.end());
+}
+
+namespace detail
+{
+
+template <class T, std::ptrdiff_t N>		// type of N is implementation-defined, but should match std::fixed_vector<T>::size_type
+class ssf_vect : public std::fixed_vect<T>
+{
+	store_t	data_array_[N];
+
+public:
+	ssf_vect() noexcept
+		: std::fixed_vect<T>(data_array_, N)
+	{
+	}
+
+	ssf_vect(size_type count, const T& value)
+		: std::fixed_vect<T>(data_array_, N)
+	{
+		insert(cbegin(), count, value);
+	}
+
+	ssf_vect(size_type count)
+		: std::fixed_vect<T>(data_array_, N)
+	{
+		insert(cbegin(), count);
+	}
+
+	template <class InputIt>
+	ssf_vect(InputIt first, InputIt last)
+		: std::fixed_vect<T>(data_array_, N)
+	{
+		insert(cbegin(), first, last);
+	}
+
+	ssf_vect(std::initializer_list<T> ilist)
+		: std::fixed_vect<T>(data_array_, N)
+	{
+		insert(cbegin(), ilist.begin(), ilist.end());
+	}
+
+	// Expensive operations
+	ssf_vect(const ssf_vect& other) = delete;
+	ssf_vect& operator=(const ssf_vect& other) = delete;
+	ssf_vect(ssf_vect&& other) = delete;
+	ssf_vect& operator=(ssf_vect&& other) = delete;
+};
+
+template <class T>
+class rsf_vect : public std::fixed_vect<T>
+{
+public:
+	// Expensive operations
+	rsf_vect(const rsf_vect&) = delete;
+	rsf_vect& operator=(const rsf_vect<T>& other) = delete;
+
+	rsf_vect()
+		: std::fixed_vect<T>(nullptr, 0)
+	{
+	}
+
+	rsf_vect(size_type N)
+		: std::fixed_vect<T>(nullptr, N)
+	{
+		set_data_array(new store_t[N]);
+	}
+
+	rsf_vect(size_type N, size_type count)
+		: std::fixed_vect<T>(nullptr, N)
+	{
+		set_data_array(new store_t[N]);
+		insert(cbegin(), count);
+	}
+
+	rsf_vect(size_type N, size_type count, const T& value)
+		: std::fixed_vect<T>(nullptr, N)
+	{
+		set_data_array(new store_t[N]);
+		insert(cbegin(), count, value);
+	}
+
+	template <class InputIt>
+	rsf_vect(size_type N, InputIt first, InputIt last)
+		: std::fixed_vect<T>(nullptr, N)
+	{
+		set_data_array(new store_t[N]);
+		insert(cbegin(), first, last);
+	}
+
+	rsf_vect(size_type N, std::initializer_list<T> init)
+		: std::fixed_vect<T>(nullptr, N)
+	{
+		set_data_array(new store_t[N]);
+		return insert(cbegin(), ilist.begin(), ilist.end());
+	}
+
+	rsf_vect(rsf_vect&& other)
+		: std::fixed_vect<T>(other.data_, other.capacity())
+	{
+		size_				= other_.size_;
+
+		other_.data_		= nullptr;
+		other_.max_size_	= 0;
+		other_.size_		= 0;
+	}
+
+	~rsf_vect()
+	{
+		delete[] data();
+	}
+
+	rsf_vect& operator=(rsf_vect&& other)
+	{
+		if (&other != this)
+		{
+			delete[] data();
+
+			data_		= other_.data_;
+			max_size_	= other_.max_size_;
+			size_		= other_.size_;
+
+			other_.data_		= nullptr;
+			other_.max_size_	= 0;
+			other_.size_		= 0;
+		}
+		return *this;
+	}
+};
+
+} // namespace detail
+
+} // namespace std
+
+#endif //#ifndef FIXED_VECT_GUARD_
