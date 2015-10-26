@@ -13,7 +13,9 @@ There are many implementations of fixed-capacity vectors out there.  Two open-so
 
 There are of course many closed-source implementations developed within various companies.  
 
-Most of these libraries use a class heirarchy to achieve code usability where the base class forms the vector interface and derived classes are used to define the capacity.  This project keeps this high-level idea.  std::fixed_vect<T> defines the interface class and std::fixed_vect<T>::static_sized<N> and std::fixed_vect<T>::runtime_sized serve as the declaration types.
+Also, some interesting discussion on the design of fixed-capacity containers can be found [here on reddit](https://www.reddit.com/r/cpp/comments/2mw6xk/c_stl_for_embedded_developers/).
+
+Most of existing libraries use a class heirarchy to achieve code usability where the base class forms the vector interface and derived classes are used to define the capacity.  This project keeps this high-level idea.  std::fixed_vect<T> defines the interface class and std::fixed_vect<T>::static_sized<N> and std::fixed_vect<T>::runtime_sized serve as the declaration types.
 
 The drawback with most existing libraries is that they do not use many C++11 or C++14 features, since many embedded projects still use old compilers.  This is mostly an effect of having legacy projects.  Embedded compiler vendors and RTOS vendors are providing more up-to-date compilers.  These compilers can compile std::fixed_vect and should a embedded containers proposal be accepted into the standard, these vendors will hopefully be able to provide implementations in a relatively short timeframe for new embedded projects.
 
@@ -25,3 +27,5 @@ And there are some new member functions too:
 
 * Functions that make sense for fixed-capacity containers (such as `bool full() const`)
 * Functions aimed to help avoid throwing exceptions when the container is full (`emplace_at()` and `inject()`)
+
+The one major area this project deviates from other work is the addition of a runtime-sized declaration class (`std::fixed_vect<T>::runtime_sized`).  There are use cases where the required capacity of a container isn't known at compile-time, but can be determined prior to the long-term running state.  This follows the embedded idiom of "allocate memory from the free store only at the start of the application, and then never thereafter."
