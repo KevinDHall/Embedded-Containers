@@ -14,6 +14,11 @@
 #include <type_traits>
 #include <utility>
 
+// NOTE: This is a quickly-thrown together implementation and
+//       is not yet well tested.  In its current form, it
+//       primarily demonstrates what a fixed-length vector
+//       could look like.
+
 namespace std
 {
 
@@ -26,7 +31,7 @@ namespace detail
 	class rsf_vect;
 } // namespace detail
 
-template <typename T>
+template <class T>
 class fixed_vect
 {
 public:
@@ -66,7 +71,15 @@ private:
 		pos->~value_type();
 	}
 
-	bool resize_add(size_type count, const value_type& value)
+	void destruct_all() noexcept
+	{
+		for (auto&& elem : *this)
+		{
+			destruct(&elem);
+		}
+	}
+
+	void resize_add(size_type count, const value_type& value)
 	{
 		if (count > max_size_)
 		{
@@ -149,9 +162,60 @@ private:
 			construct(it, *first);
 		}
 
+		if (first != last)
+		{
+			throw std::bad_alloc{};
+		}
+
 		move_elements(end_elems_pos, &(data()[max_size_]), it);
 		size_ += (it-mpos);
 		return mpos;
+	}
+
+	template <class Iterator>
+	std::pair<size_type, Iterator> inject_itrange_helper(const_iterator pos, Iterator first, Iterator last, std::true_type /* is Iterator a bidirectional access iterator */)
+	{
+		size_type new_elem_count = std::distance(first, last);
+
+		if (new_elem_count + size_ > max_size_)
+		{
+			if (full())
+			{
+				return std::make_pair(size_type(0), first);
+			}
+			new_elem_count = max_size_ - size_;
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos + new_elem_count);
+		
+		for (auto it = mpos; first != last; ++it, ++first)
+		{
+			construct(it, *first);
+		}
+
+		size_ += new_elem_count;
+		return std::make_pair(new_elem_count, first);
+	}
+
+	template <class Iterator>
+	std::pair<size_type, Iterator> inject_itrange_helper(const_iterator pos, Iterator first, Iterator last, std::false_type /* is Iterator a bidirectional access iterator */)
+	{
+		const size_type max_new_elems = max_size_ - size_;
+		const iterator mpos = mutable_iterator(pos);
+		const iterator end_elems_pos = mpos + max_new_elems;
+		move_elements(mpos, end(), end_elems_pos);
+
+		iterator  it = mpos;
+		for (size_type i=0; (i<max_new_elems) && (first != last); ++i, ++it, ++first)
+		{
+			construct(it, *first);
+		}
+
+		move_elements(end_elems_pos, &(data()[max_size_]), it);
+		const size_type new_elem_count = (it-mpos);
+		size_ += new_elem_count;
+		return std::make_pair(new_elem_count, first);
 	}
 
 	// 23.3.6.2, construct/copy/destroy:
@@ -447,7 +511,7 @@ public:
 
 		for (size_type i=0; i<count; ++i, ++it)
 		{
-			get_constructible_ptr(it)->construct(value);
+			construct(it, value);
 		}
 		size_ += count;
 		return mpos;
@@ -509,6 +573,105 @@ public:
 	void clear() noexcept
 	{
 		erase(cbegin(), cend());
+	}
+
+	// The following member functions are designed to be exception-free replacements
+	// for emplace(const_iterator, Args&&...) and the various insert functions.
+	// These are intended to appeal to people who want an interface that doesn't
+	// throw exceptions when attempting to add elements to a full container.
+	//
+	// They still can't be trivially declared noexcept since it is unknown if T's
+	// constructor can throw.  It may be possible to specify when the functions can be
+	// noexcept with a complicated expression.  I have not put effort into that yet though.
+	template <class... Args>
+	bool emplace_at(const_iterator pos, Args&&... args)
+ 	{
+		if (size_ >= max_size_)
+		{
+			return false;
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, std::forward<Args>(args)...);
+		++size_;
+		return true;
+ 	}
+
+	bool inject(const_iterator pos, const T& value)
+	{
+		if (size_ >= max_size_)
+		{
+			return false;
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, value);
+		++size_;
+		return true;
+	}
+
+	bool inject(const_iterator pos, T&& value)
+	{
+		if (size_ >= max_size_)
+		{
+			return false;
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+1);
+		construct(mpos, std::move(value));
+		++size_;
+		return true;
+	}
+
+	size_type inject(const_iterator pos, size_type count, const T& value)
+	{
+		if (count + size_ > max_size_)
+		{
+			if (full())
+			{
+				return 0;
+			}
+			count = max_size_ - size_;
+		}
+
+		const iterator mpos = mutable_iterator(pos);
+		move_elements(mpos, end(), mpos+count);
+		iterator it = mpos;
+
+		for (size_type i=0; i<count; ++i, ++it)
+		{
+			construct(it, value);
+		}
+		size_ += count;
+		return count;
+	}
+
+	template <class InputIterator>
+	std::pair<size_type, InputIterator> inject(const_iterator pos, InputIterator first, InputIterator last)
+	{
+		auto isBidirectionalIterator = integral_constant<bool,
+											std::is_same<
+												std::iterator_traits<InputIterator>::iterator_category,
+												std::random_access_iterator_tag
+											>::value ||
+											std::is_same<
+												std::iterator_traits<InputIterator>::iterator_category,
+												std::bidirectional_iterator_tag
+											>::value
+										>{};
+		return inject_itrange_helper(pos,
+									 first,
+									 last,
+									 isBidirectionalIterator);
+	}
+
+	size_type inject(const_iterator pos, std::initializer_list<T> ilist)
+	{
+		const auto result = inject(pos, ilist.begin(), ilist.end());
+		reteurn result.first;
 	}
 };
 
@@ -591,6 +754,11 @@ public:
 		insert(cbegin(), ilist.begin(), ilist.end());
 	}
 
+	~ssf_vect()
+	{
+		destruct_all();
+	}
+
 	// Expensive operations
 	ssf_vect(const ssf_vect& other) = delete;
 	ssf_vect& operator=(const ssf_vect& other) = delete;
@@ -658,6 +826,7 @@ public:
 
 	~rsf_vect()
 	{
+		destruct_all();
 		delete[] data();
 	}
 
