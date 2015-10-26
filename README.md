@@ -3,7 +3,6 @@ In the CppCon 2015 session “Grill the Committee”, Bjarne Stroustrup had [the fol
 > There is one library I would like to see for the embedded systems community.... I would like to see a set of container classes that does not use the free store.  It can be done; it has been done; I don't see any reason why the comittee couldn't support it.
 
 Bjarne stated ealier that in the same session ["Embedded C++ should not have been brought into existence."](https://youtu.be/PqU_ot4BlNQ?t=2145) and "Subsetting the library or adding a non-compliant library is a very poor solution."
-https://youtu.be/PqU_ot4BlNQ?t=2130
 
 This agrees very much with my own views on C++ in the embedded world.  I have a strong desire to see container classes that are more useful to the embedded world.  This project is an attempt to provide a possible implementation for a fixed-capacity vector proposal.  I desire to see more containers part of a final proposal, but a fixed-capacity vector is probably the most needed container and will also serve as a good starting point to flesh out ideas.
 
